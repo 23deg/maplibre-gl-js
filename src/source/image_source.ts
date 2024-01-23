@@ -19,6 +19,30 @@ import type {
     ImageSourceSpecification,
     VideoSourceSpecification
 } from '@maplibre/maplibre-gl-style-spec';
+import {mat3, vec3} from 'gl-matrix';
+
+// perspective correction for texture mapping
+// see https://github.com/mapbox/mapbox-gl-js/issues/9158
+// and https://github.com/mapbox/mapbox-gl-js/pull/11292
+// adapted from https://math.stackexchange.com/a/339033/48653
+
+const basisToPoints = (x1, y1, x2, y2, x3, y3, x4, y4) => {
+    const m: mat3 = [x1, x2, x3, y1, y2, y3, 1, 1, 1];
+    const s: vec3 = [x4, y4, 1];
+    const ma = mat3.adjoint([] as unknown as mat3, m);
+    const [sx, sy, sz] = vec3.transformMat3(s, s, mat3.transpose(ma, ma));
+    return mat3.multiply(m, [sx, 0, 0, 0, sy, 0, 0, 0, sz], m);
+};
+
+const getPerspectiveTransform = (w, h, x1, y1, x2, y2, x3, y3, x4, y4): [number, number] => {
+    const s = basisToPoints(0, 0, w, 0, 0, h, w, h);
+    const m = basisToPoints(x1, y1, x2, y2, x3, y3, x4, y4);
+    mat3.multiply(m, mat3.adjoint(s, s), m);
+    return [
+        m[6] / m[8] * w / EXTENT,
+        m[7] / m[8] * h / EXTENT
+    ];
+};
 
 /**
  * Four geographical coordinates,
@@ -92,6 +116,8 @@ export class ImageSource extends Evented implements Source {
     maxzoom: number;
     tileSize: number;
     url: string;
+    width: number;
+    height: number;
 
     coordinates: Coordinates;
     tiles: {[_: string]: Tile};
@@ -106,6 +132,7 @@ export class ImageSource extends Evented implements Source {
     boundsSegments: SegmentVector;
     _loaded: boolean;
     _request: AbortController;
+    perspectiveTransform: [number, number];
 
     /** @internal */
     constructor(id: string, options: ImageSourceSpecification | VideoSourceSpecification | CanvasSourceSpecification, dispatcher: Dispatcher, eventedParent: Evented) {
@@ -140,6 +167,8 @@ export class ImageSource extends Evented implements Source {
 
             if (image && image.data) {
                 this.image = image.data;
+                this.width = this.image.width;
+                this.height = this.image.height;
                 if (newCoordinates) {
                     this.coordinates = newCoordinates;
                 }
@@ -224,15 +253,16 @@ export class ImageSource extends Evented implements Source {
         // level)
         this.minzoom = this.maxzoom = this.tileID.z;
 
-        // Transform the corner coordinates into the coordinate space of our
-        // tile.
-        const tileCoords = cornerCoords.map((coord) => this.tileID.getTilePoint(coord)._round());
+        // Transform the corner coordinates into the coordinate space of our tile.
+        const [tl, tr, br, bl] = cornerCoords.map((coord) => this.tileID.getTilePoint(coord)._round());
+        this.perspectiveTransform = getPerspectiveTransform(
+            this.width, this.height, tl.x, tl.y, tr.x, tr.y, bl.x, bl.y, br.x, br.y);
 
         this._boundsArray = new RasterBoundsArray();
-        this._boundsArray.emplaceBack(tileCoords[0].x, tileCoords[0].y, 0, 0);
-        this._boundsArray.emplaceBack(tileCoords[1].x, tileCoords[1].y, EXTENT, 0);
-        this._boundsArray.emplaceBack(tileCoords[3].x, tileCoords[3].y, 0, EXTENT);
-        this._boundsArray.emplaceBack(tileCoords[2].x, tileCoords[2].y, EXTENT, EXTENT);
+        this._boundsArray.emplaceBack(tl.x, tl.y, 0, 0);
+        this._boundsArray.emplaceBack(tr.x, tr.y, EXTENT, 0);
+        this._boundsArray.emplaceBack(bl.x, bl.y, 0, EXTENT);
+        this._boundsArray.emplaceBack(br.x, br.y, EXTENT, EXTENT);
 
         if (this.boundsBuffer) {
             this.boundsBuffer.destroy();

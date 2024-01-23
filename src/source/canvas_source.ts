@@ -69,8 +69,6 @@ export class CanvasSource extends ImageSource {
     options: CanvasSourceSpecification;
     animate: boolean;
     canvas: HTMLCanvasElement;
-    width: number;
-    height: number;
     /**
      * Enables animation. The image will be copied from the canvas to the map on each frame.
      */
